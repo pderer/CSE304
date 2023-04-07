@@ -1,0 +1,218 @@
+diff --git a/file.h b/file.h
+index 277287a..b1c7115 100644
+--- a/file.h
++++ b/file.h
+@@ -22,7 +22,7 @@ struct inode {
+   short minor;
+   short nlink;
+   uint size;
+-  uint addrs[NDIRECT+1]; // Optional TODO
++  uint addrs[NDIRECT+2]; // Optional TODO
+ };
+ 
+ // table mapping major device number to
+diff --git a/fs.c b/fs.c
+index 73e44a7..f09aa08 100644
+--- a/fs.c
++++ b/fs.c
+@@ -383,14 +383,43 @@ bmap(struct inode *ip, uint bn)
+   bn -= NDIRECT;
+ 
+   /* TODO Start */
+-  if(bn < NINDIRECT){
++  if(bn < NINDIRECT*NINDIRECT){
+     // Load indirect block, allocating if necessary.
+     if((addr = ip->addrs[NDIRECT]) == 0)
+       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+     bp = bread(ip->dev, addr);
+     a = (uint*)bp->data;
+-    if((addr = a[bn]) == 0){
+-      a[bn] = addr = balloc(ip->dev);
++    if((addr = a[bn/NINDIRECT]) == 0){
++      a[bn/NINDIRECT] = addr = balloc(ip->dev);
++      log_write(bp);
++    }
++    brelse(bp);
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    if((addr = a[bn%NINDIRECT]) == 0){
++      a[bn%NINDIRECT] = addr = balloc(ip->dev);
++      log_write(bp);
++    }
++    brelse(bp);
++    return addr;
++  }
++  bn -= NINDIRECT*NINDIRECT;
++
++  if(bn < NINDIRECT*NINDIRECT){
++    // Load indirect block, allocating if necessary.
++    if((addr = ip->addrs[NDIRECT+1]) == 0)
++      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    if((addr = a[bn/NINDIRECT]) == 0){
++      a[bn/NINDIRECT] = addr = balloc(ip->dev);
++      log_write(bp);
++    }
++    brelse(bp);
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    if((addr = a[bn%NINDIRECT]) == 0){
++      a[bn%NINDIRECT] = addr = balloc(ip->dev);
+       log_write(bp);
+     }
+     brelse(bp);
+@@ -412,7 +441,8 @@ itrunc(struct inode *ip)
+   int i, j;
+   struct buf *bp;
+   uint *a;
+-  // TODO - Add new variables
++  struct buf *bp2;
++  uint *a2;       // TODO - Add new variables
+ 
+   for(i = 0; i < NDIRECT; i++){
+     if(ip->addrs[i]){
+@@ -425,14 +455,44 @@ itrunc(struct inode *ip)
+   if(ip->addrs[NDIRECT]){
+     bp = bread(ip->dev, ip->addrs[NDIRECT]);
+     a = (uint*)bp->data;
+-    for(j = 0; j < NINDIRECT; j++){
+-      if(a[j])
+-        bfree(ip->dev, a[j]);
++    for(i = 0; i < NINDIRECT; i++){
++      if(a[i]){
++        bp2 = bread(ip->dev, a[i]);
++        a2 = (uint*)bp2->data;
++        for(j = 0; j < NINDIRECT; j++){
++          if(a2[j])
++            bfree(ip->dev, a2[j]);
++        }
++        brelse(bp2);
++        bfree(ip->dev, a[i]);
++        a[i] = 0;
++      }
+     }
+     brelse(bp);
+     bfree(ip->dev, ip->addrs[NDIRECT]);
+     ip->addrs[NDIRECT] = 0;
+   }
++
++  if(ip->addrs[NDIRECT+1]){
++    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
++    a = (uint*)bp->data;
++    for(i = 0; i < NINDIRECT; i++){
++      if(a[i]){
++        bp2 = bread(ip->dev, a[i]);
++        a2 = (uint*)bp2->data;
++        for(j = 0; j < NINDIRECT; j++){
++          if(a2[j])
++            bfree(ip->dev, a2[j]);
++        }
++        brelse(bp2);
++        bfree(ip->dev, a[i]);
++        a[i] = 0;
++      }
++    }
++    brelse(bp);
++    bfree(ip->dev, ip->addrs[NDIRECT+1]);
++    ip->addrs[NDIRECT+1] = 0;
++  }
+   /* TODO End */
+ 
+   ip->size = 0;
+diff --git a/fs.h b/fs.h
+index 4c0922c..80f0862 100644
+--- a/fs.h
++++ b/fs.h
+@@ -23,8 +23,8 @@ struct superblock {
+ 
+ #define NINDIRECT (BSIZE / sizeof(uint))
+ 
+-#define NDIRECT 12 // Optional TODO
+-#define MAXFILE (NDIRECT + NINDIRECT) // TODO
++#define NDIRECT 11 // Optional TODO
++#define MAXFILE (NDIRECT + (NINDIRECT*NINDIRECT*2)) // TODO
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -33,7 +33,7 @@ struct dinode {
+   short minor;          // Minor device number (T_DEV only)
+   short nlink;          // Number of links to inode in file system
+   uint size;            // Size of file (bytes)
+-  uint addrs[NDIRECT+1];   // Data block addresses // Optional TODO
++  uint addrs[NDIRECT+2];   // Data block addresses // Optional TODO
+ };
+ 
+ // Inodes per block.
+diff --git a/mkfs.c b/mkfs.c
+index 68c1d55..d7f200f 100644
+--- a/mkfs.c
++++ b/mkfs.c
+@@ -259,8 +259,9 @@ iappend(uint inum, void *xp, int n)
+   uint fbn, off, n1;
+   struct dinode din;
+   char buf[BSIZE];
+-  uint indirect[NINDIRECT];
+-  // TODO - Add new variables
++  uint indirect[NINDIRECT]; // default indirect 128 have entry (djp)
++  uint double_indirect1[NINDIRECT];// TODO - Add new variables
++  uint double_indirect2[NINDIRECT];
+   uint x;
+ 
+   rinode(inum, &din);
+@@ -275,16 +276,38 @@ iappend(uint inum, void *xp, int n)
+       }
+       x = xint(din.addrs[fbn]);
+     /* TODO Start */
+-    } else {
++    }
++    else if (fbn < NDIRECT + NINDIRECT*NINDIRECT) {
+       if(xint(din.addrs[NDIRECT]) == 0){
+         din.addrs[NDIRECT] = xint(freeblock++);
+       }
+-      rsect(xint(din.addrs[NDIRECT]), (char*)indirect);
+-      if(indirect[fbn - NDIRECT] == 0){
+-        indirect[fbn - NDIRECT] = xint(freeblock++);
+-        wsect(xint(din.addrs[NDIRECT]), (char*)indirect);
++      rsect(xint(din.addrs[NDIRECT]), (char*)double_indirect1);
++      if(double_indirect1[(fbn - NDIRECT)/NINDIRECT] == 0){
++        double_indirect1[(fbn - NDIRECT)/NINDIRECT] = xint(freeblock++);
++        wsect(xint(din.addrs[NDIRECT]), (char*)double_indirect1);
++      }
++      rsect(xint(double_indirect1[(fbn - NDIRECT)/NINDIRECT]), (char*)indirect);
++      if(indirect[(fbn - NDIRECT)%NINDIRECT] == 0){
++        indirect[(fbn - NDIRECT)%NINDIRECT] = xint(freeblock++);
++        wsect(xint(double_indirect1[(fbn - NDIRECT)/NINDIRECT]), (char*)indirect);
++      }
++      x = xint(indirect[(fbn - NDIRECT)%NINDIRECT]);
++    }
++    else {
++      if(xint(din.addrs[NDIRECT+1]) == 0){
++        din.addrs[NDIRECT+1] = xint(freeblock++);
++      }
++      rsect(xint(din.addrs[NDIRECT+1]), (char*)double_indirect2);
++      if(double_indirect2[(fbn - NDIRECT - NINDIRECT*NINDIRECT)/NINDIRECT] == 0){
++        double_indirect2[(fbn - NDIRECT - NINDIRECT*NINDIRECT)/NINDIRECT] = xint(freeblock++);
++        wsect(xint(din.addrs[NDIRECT+1]), (char*)double_indirect2);
++      }
++      rsect(xint(double_indirect2[(fbn - NDIRECT - NINDIRECT*NINDIRECT)/NINDIRECT]), (char*)indirect);
++      if(indirect[(fbn - NDIRECT - NINDIRECT*NINDIRECT)%NINDIRECT] == 0){
++        indirect[(fbn - NDIRECT - NINDIRECT*NINDIRECT)%NINDIRECT] = xint(freeblock++);
++        wsect(xint(double_indirect2[(fbn - NDIRECT - NINDIRECT*NINDIRECT)/NINDIRECT]), (char*)indirect);
+       }
+-      x = xint(indirect[fbn-NDIRECT]);
++      x = xint(indirect[(fbn - NDIRECT - NINDIRECT*NINDIRECT)%NINDIRECT]);
+     }
+     /* TODO End */
+     n1 = min(n, (fbn + 1) * BSIZE - off);
+diff --git a/param.h b/param.h
+index 0b4aeeb..d1ac39f 100644
+--- a/param.h
++++ b/param.h
+@@ -10,5 +10,5 @@
+ #define MAXOPBLOCKS  10  // max # of blocks any FS op writes
+ #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+-#define FSSIZE       1000  // size of file system in blocks // TODO
++#define FSSIZE       200000  // size of file system in blocks // TODO
+ 

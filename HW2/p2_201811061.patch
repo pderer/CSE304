@@ -1,0 +1,335 @@
+diff --git a/mmu.h b/mmu.h
+index bd980d4..13be482 100644
+--- a/mmu.h
++++ b/mmu.h
+@@ -70,25 +70,25 @@ struct segdesc {
+ // +----------------+----------------+---------------------+
+ //  \--- PDX(va) --/ \--- PTX(va) --/
+ 
+-#define PD1XSHIFT		// TODO
+-#define PD2XSHIFT		// TODO
+-#define PTNXSHIFT		// TODO
++#define PD1XSHIFT       26		// TODO
++#define PD2XSHIFT       21		// TODO
++#define PTNXSHIFT       12		// TODO
+ 
+ // page directory index
+ #define PDX(va)         (((uint)(va) >> PDXSHIFT) & 0x3FF)
+-#define PD1X(va)		// TODO
+-#define PD2X(va)		// TODO
++#define PD1X(va)        (((uint)(va) >> PD1XSHIFT) & 0x3F)		// TODO
++#define PD2X(va)        (((uint)(va) >> PD2XSHIFT) & 0x1F)		// TODO
+ // page table index
+ #define PTX(va)         (((uint)(va) >> PTXSHIFT) & 0x3FF)
+-#define PTNX(va)		// TODO
++#define PTNX(va)        (((uint)(va) >> PTNXSHIFT) & 0x1FF)		// TODO
+ // offset within page
+ #define OWP(va)         ((uint)(va) & 0xFFF)
+ 
+ // construct virtual address from indexes and offset
+ #define PGADDR(d, t, o) ((uint)((d) << PDXSHIFT | (t) << PTXSHIFT | (o)))
+-#define PG1ADDR(d, t, o) // TODO
+-#define PG2ADDR(d, t, o) // TODO
+-#define PG3ADDR(d1, d2, t, o) // TODO
++#define PG1ADDR(d, t, o) ((uint)((d) << PD1XSHIFT | (t) << PTNXSHIFT | (o))) // TODO
++#define PG2ADDR(d, t, o) ((uint)((d) << PD2XSHIFT | (t) << PTNXSHIFT | (o))) // TODO
++#define PG3ADDR(d1, d2, t, o) ((uint)((d1) << PD1XSHIFT | (d2) << PD2XSHIFT | (t) << PTNXSHIFT | (o))) // TODO
+ // Page directory and page table constants.
+ #define NPDENTRIES      1024    // # directory entries per page directory
+ #define PGSIZE          4096    // bytes mapped by a page
+diff --git a/vm.c b/vm.c
+index 234dfd3..74af88b 100644
+--- a/vm.c
++++ b/vm.c
+@@ -17,14 +17,42 @@ void printvm(pde_t * pgdir)
+   cprintf("=Virtual Memory Status=\n");
+ 
+   // TODO
+-
+-  /*
+-   * cprintf("pgdir: 0x%x\n", pgdir);
+-   * cprintf("--- %d: pd1e: 0x%x, pa: 0x%x\n", i, pgdir[i], V2P(pd1e));
+-   * cprintf("----- %d: Page directory2 VA: 0x%x\n", i, pgdir2);
+-   * cprintf("------- %d: pd2e: 0x%x, pa: 0x%x\n", j, pgdir2[j], V2P(pd2e));
+-   * cprintf("--------- %d: pte: 0x%x, pa: 0x%x\n", k, pgtab[k], V2P(pgtab));
+-   */
++  pde_t *pgdir2;
++  pde_t *pd1e;
++  pde_t *pd2e;
++  pte_t *pgtab;
++  uint i, j ,k;
++
++  cprintf("pgdir: 0x%x\n", pgdir);
++  for(i = 0; i < 64; i++){ // traverse pd1
++    if(pgdir[i] & PTE_P && pgdir[i] & PTE_U){ // present check
++      pd1e = &pgdir[i];
++      pgdir2 = (pde_t*)P2V(PTE_ADDR(*pd1e));
++      for(j = 0; j < 32; j++){ // traverse pd2
++        if(pgdir2[j] & PTE_P && pgdir2[j] & PTE_U){ // present check
++          pd2e = &pgdir2[j];
++          int valid = 0;
++          pgtab = (pte_t*)P2V(PTE_ADDR(*pd2e));
++          for(k = 0; k < 512; k++){ // traverse page table
++            if(pgtab[k] & PTE_P && pgtab[k] & PTE_U){ // if present, we have to traverse all page table
++              valid = 1;
++              break;
++            }
++          }
++          if (valid){ // traverse all page table
++            cprintf("--- %d: pd1e: 0x%x, pa: 0x%x\n", i, pgdir[i], V2P(pd1e));
++            cprintf("----- %d: Page directory2 VA: 0x%x\n", i, pgdir2);
++            cprintf("------- %d: pd2e: 0x%x, pa: 0x%x\n", j, pgdir2[j], V2P(pd2e));
++            for(k = 0; k < 512; k++){
++              if(pgtab[k] & PTE_P && pgtab[k] & PTE_U){
++              cprintf("--------- %d: pte: 0x%x, pa: 0x%x\n", k, pgtab[k], V2P(pgtab));
++              }
++            }
++          }
++        }
++      }
++    }
++  }
+ }
+ 
+ void
+@@ -50,25 +78,37 @@ seginit(void)
+ static pte_t *
+ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ {
+-  pde_t *pde;
++  pde_t *pgdir2;
++  pde_t *pd1e;
++  pde_t *pd2e;
+   pte_t *pgtab;
+-
++  
+   // TODO: Modify for 3-level paging
+-
+-  pde = &pgdir[PDX(va)];
+-  if(*pde & PTE_P){
+-    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+-  } else {
+-    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
++  pd1e = &pgdir[PD1X(va)];
++  if(*pd1e & PTE_P){  // pd1e have present bit
++    pgdir2 = (pde_t*)P2V(PTE_ADDR(*pd1e));
++    pd2e = &pgdir2[PD2X(va)];
++    if(*pd2e & PTE_P){  // pd2e have present bit
++      pgtab = (pte_t*)P2V(PTE_ADDR(*pd2e));
++    } else { // pd2e is not present -> allocation
++      if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
++        return 0;
++      memset(pgtab, 0, PGSIZE);
++      *pd2e = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
++    }
++  } else { // pd1e is not present -> allocation
++    if(!alloc || (pgdir2 = (pde_t*)kalloc()) == 0)
++      return 0;
++    memset(pgdir2, 0, PGSIZE);
++    *pd1e = V2P(pgdir2) | PTE_P | PTE_W | PTE_U;
++    pd2e = &pgdir2[PD2X(va)];
++    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0) // if pd1e is not present, pd2e is not present too. -> allocation
+       return 0;
+-    // Make sure all those PTE_P bits are zero.
+     memset(pgtab, 0, PGSIZE);
+-    // The permissions here are overly generous, but they can
+-    // be further restricted by the permissions in the page table
+-    // entries, if necessary.
+-    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
++    *pd2e = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+   }
+-  return &pgtab[PTX(va)];
++  pgtab[PTNX(va) + 512] += 1; // count page access in page table
++  return &pgtab[PTNX(va)];
+ }
+ 
+ static pte_t *
+@@ -291,6 +331,39 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz, uint flags)
+   return newsz;
+ }
+ 
++// search pgdir1
++// if found, return pd2e address
++// else, return 0
++static pde_t* walkpgdir1(pde_t *pgdir, const void *va){
++  pde_t *pgdir2;
++  pde_t *pd1e;
++
++  pd1e = &pgdir[PD1X(va)];
++  if(*pd1e & PTE_P){
++    pgdir2 = (pde_t*)P2V(PTE_ADDR(*pd1e));
++  } else {
++    return 0;
++  }
++  return &pgdir2[PD2X(va)];
++}
++
++// search pgdir2
++// if found, return pte address
++// else, return 0
++static pte_t* walkpgdir2(pde_t *pd2e, const void *va){
++  pte_t *pgtab;
++
++  if(pd2e == 0) // if walkpgdir1 return 0, walkpgdir2 return 0 too.
++    return 0;
++  
++  if(*pd2e & PTE_P){
++    pgtab = (pte_t*)P2V(PTE_ADDR(*pd2e));
++  } else {
++    return 0;
++  }
++  return &pgtab[PTNX(va)];
++}
++
+ // Deallocate user pages to bring the process size from oldsz to
+ // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+ // need to be less than oldsz.  oldsz can be larger than the actual
+@@ -299,24 +372,43 @@ int
+ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
+ {
+   // TODO: Modify for 3-level paging
+-
++  pde_t *pd2e;
+   pte_t *pte;
+   uint a, pa;
+ 
+   if(newsz >= oldsz)
+     return oldsz;
+-
+   a = PGROUNDUP(newsz);
+-  for(; a  < oldsz; a += PGSIZE){
+-    pte = walkpgdir(pgdir, (char*)a, 0);
+-    if(!pte)
+-      a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
+-    else if((*pte & PTE_P) != 0){
++  for(; a  < oldsz; a += PGSIZE){ // traverse
++    pd2e = walkpgdir1(pgdir, (char*)a);
++    pte = walkpgdir2(pd2e, (char*)a);  // no allocation, just search
++    if(!pd2e){ // there is no present pd2e
++      if(PD1X(a) + 1 > 63){ // prevent pd1 overflow
++        break;
++      }
++      // traverse next pd1e
++      a = PG3ADDR(PD1X(a) + 1, 0, 0, 0) - PGSIZE;
++    }
++    else if(!pte){ // there is no present pte
++      if(PD2X(a) + 1 > 31){  // prevent pd2 overflow
++        if(PD1X(a) + 1 > 63){ // prevent pd1 overflow
++          break;
++        } else {
++          // traverse next pd1e
++          a = PG3ADDR(PD1X(a) + 1, 0, 0, 0) - PGSIZE;
++        }
++      }
++      else {
++        // traverse next pd2e
++        a = PG3ADDR(PD1X(a), PD2X(a) + 1, 0, 0) - PGSIZE;
++      }
++    }
++    else if((*pte & PTE_P) != 0){ // there is pte to free
+       pa = PTE_ADDR(*pte);
+       if(pa == 0)
+         panic("kfree");
+       char *v = P2V(pa);
+-      kfree(v);
++      kfree(v); // only free page in deallocuvm
+       *pte = 0;
+     }
+   }
+@@ -329,19 +421,31 @@ void
+ freevm(pde_t *pgdir)
+ {
+   // TODO: Modify for 3-level paging
+-
+-  uint i;
++  pde_t *pgdir2;
++  pte_t *pgtab;
++  uint i, j, k;
+ 
+   if(pgdir == 0)
+     panic("freevm: no pgdir");
+-  deallocuvm(pgdir, KERNBASE, 0);
+-  for(i = 0; i < NPDENTRIES; i++){
+-    if(pgdir[i] & PTE_P){
+-      char * v = P2V(PTE_ADDR(pgdir[i]));
+-      kfree(v);
++  deallocuvm(pgdir, KERNBASE, 0); // free page, after that, free page table and directories
++  for(i = 0; i < 64; i++){ // pd1 : 64 entries (6 bit)
++    if(pgdir[i] & PTE_P){ // if its valid, it should traverse second pgdir
++      pgdir2 = (pde_t*)P2V(PTE_ADDR(pgdir[i]));
++      for(j = 0; j < 32; j++){ // pd2 : 32 entries (5 bit)
++        if(pgdir2[j] & PTE_P){ // if its valid, it should traverse page table
++          pgtab = (pte_t*)P2V(PTE_ADDR(pgdir2[j]));
++          for(k = 0; k < 512; k++){ // pte : 512 entries (9 bit)
++            if(pgtab[k + 512] > 1){ // only print page access count 2 or more
++              cprintf("va: 0x%x, pgtab[%d]: %d\n", k*PGSIZE, k, pgtab[k + 512]);
++            }
++          }
++          kfree((char*)pgtab); // free page table
++        }
++      }
++      kfree((char*)pgdir2); // free second page directory
+     }
+   }
+-  kfree((char*)pgdir);
++  kfree((char*)pgdir); // free first page director
+ }
+ 
+ // Clear PTE_U on a page. Used to create an inaccessible
+@@ -448,11 +552,9 @@ static uint __virt_to_phys3(pde_t *pgdir, struct proc *proc, uint va)
+   // TODO: Modify for 3-level paging
+ 
+   uint pa;
+-
+-  pde_t *pde = &pgdir[PDX(va)];
+-  pte_t *pgtable = (pte_t*)P2V(PTE_ADDR(*pde));
+-
+-  pa = PTE_ADDR(pgtable[PTX(va)]) | OWP(va);
++  // find pte by walkpgdir
++  pte_t* pte = walkpgdir(pgdir, (char*)va, 0);
++  pa = PTE_ADDR(*pte) | OWP(va);
+ 
+   return pa;
+ }
+@@ -489,6 +591,9 @@ void pagefault(void)
+   struct proc *proc;
+   pde_t *pde;
+   pte_t *pgtab;
++  pde_t *pd1e;
++  pde_t *pd2e;
++  pde_t *pgdir2;
+   uint va, flags = 0;
+ 
+   clprintf("pagefault++\n");
+@@ -503,13 +608,19 @@ void pagefault(void)
+   virt_to_phys3("pgdir", proc->pgdir, proc, va);
+ 
+   // Save PTE flags
+-  pde = &proc->pgdir[PDX(va)];
+-  if(*pde & PTE_P){
+-    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+-    flags = PTE_FLAGS(pgtab[PTX(va)]);
++  // need to modify for 3 level paging
++  pd1e = &proc->pgdir[PD1X(va)];
++  if(*pd1e & PTE_P){
++    pgdir2 = (pde_t*)P2V(PTE_ADDR(*pd1e));
++    pd2e = &pgdir2[PD2X(va)];
++    if(*pd2e & PTE_P){
++      pgtab = (pte_t*)P2V(PTE_ADDR(*pd2e));
++      flags = PTE_FLAGS(pgtab[PTNX(va)]);
++    }
+   }
+ 
+   // Remove existing shadow_pgdir mapping
++  // dont need to modified
+   if (proc->last_va != 0 && proc->last_va != va) {
+     pde = &proc->shadow_pgdir[PDX(proc->last_va)];
+     if (*pde & PTE_P) {
+@@ -522,6 +633,7 @@ void pagefault(void)
+   }
+ 
+   // Map pgdir's page address to shadow_pgdir's page table
++  // it should not be modified
+   pde = &proc->shadow_pgdir[PDX(va)];
+   if (*pde & PTE_P) {
+     pgtab = (pte_t*)P2V(PTE_ADDR(*pde));

@@ -1,0 +1,110 @@
+diff --git a/proc.c b/proc.c
+index 806b1b1..8e05666 100644
+--- a/proc.c
++++ b/proc.c
+@@ -90,7 +90,7 @@ found:
+   p->pid = nextpid++;
+ 
+   release(&ptable.lock);
+-
++	
+   // Allocate kernel stack.
+   if((p->kstack = kalloc()) == 0){
+     p->state = UNUSED;
+@@ -141,13 +141,13 @@ userinit(void)
+ 
+   safestrcpy(p->name, "initcode", sizeof(p->name));
+   p->cwd = namei("/");
+-
++	
+   // this assignment to p->state lets other cores
+   // run this process. the acquire forces the above
+   // writes to be visible, and the lock is also needed
+   // because the assignment might not be atomic.
+   acquire(&ptable.lock);
+-
++	
+   p->state = RUNNABLE;
+ 
+   release(&ptable.lock);
+@@ -212,6 +212,8 @@ fork(void)
+ 
+   pid = np->pid;
+ 
++	np->csc = 0; // (djp)
++
+   acquire(&ptable.lock);
+ 
+   np->state = RUNNABLE;
+@@ -261,6 +263,10 @@ exit(void)
+     }
+   }
+ 
++	// print after process is end (by djp)
++  cprintf("\n%s(%d) performed %d context switches\n",
++									curproc->name, curproc->pid, curproc->csc);
++	
+   // Jump into the scheduler, never to return.
+   curproc->state = ZOMBIE;
+   sched();
+@@ -343,6 +349,8 @@ scheduler(void)
+       switchuvm(p);
+       p->state = RUNNING;
+ 
++			p->csc = p->csc + 1; // count++ (by djp)
++
+       swtch(&(c->scheduler), p->context);
+       switchkvm();
+ 
+@@ -377,6 +385,7 @@ sched(void)
+   if(readeflags()&FL_IF)
+     panic("sched interruptible");
+   intena = mycpu()->intena;
++
+   swtch(&p->context, mycpu()->scheduler);
+   mycpu()->intena = intena;
+ }
+diff --git a/proc.h b/proc.h
+index 1647114..d7444b1 100644
+--- a/proc.h
++++ b/proc.h
+@@ -49,6 +49,7 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++	int csc;									   // context switch count (by djp)
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff --git a/syscall.c b/syscall.c
+index ee85261..5f58b1e 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,8 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_getcswitch(void); // (djp)
++extern int sys_setcswitch(void); // (djp)
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +128,8 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_getcswitch]		sys_getcswitch, // (djp)
++[SYS_setcswitch]		sys_setcswitch, // (djp)
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..f755f73 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_getcswitch 22
++#define SYS_setcswitch 23
